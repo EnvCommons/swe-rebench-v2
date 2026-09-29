@@ -60,6 +60,9 @@ class TaskSpec(BaseModel):
 
 ENVIRONMENT_NAME = "nebius/SWE-rebench-V2"
 
+# Where submit_answer writes the test run's combined stdout and stderr.
+TEST_LOG_PATH = "/tmp/test_output.log"
+
 
 class BashInput(BaseModel):
     """Input for bash command execution."""
@@ -109,6 +112,19 @@ def _strip_ansi(s: str) -> str:
     return _ANSI_RE.sub("", s).strip()
 
 
+# C0 (except \t \n \r), DEL and C1 control characters, as sandbox.run() strips them
+_CONTROL_CHARS = {
+    c: None
+    for c in (*range(0x00, 0x09), 0x0B, 0x0C, *range(0x0E, 0x20), *range(0x7F, 0xA0))
+}
+
+
+def _decode_log(data: bytes) -> str:
+    """Decode a downloaded log the way sandbox.run() decodes command output."""
+    text = data.decode("utf-8", "backslashreplace").rstrip()
+    return _ANSI_RE.sub("", text).translate(_CONTROL_CHARS)
+
+
 def _shell_quote(s: str) -> str:
     return "'" + s.replace("'", "'\"'\"'") + "'"
 
@@ -141,6 +157,9 @@ class SWERebenchV2(Environment):
             machine_size="2:4"
         )
         self.sandbox = self.or_client.sandbox(self.sandbox_settings)
+        # Set before submit_answer's first await, so an overlapping second
+        # submission sees it instead of re-applying the test patch.
+        self._submitting = False
 
     # ----- splits / tasks (class methods) -----
 
@@ -306,6 +325,21 @@ class SWERebenchV2(Environment):
     @tool
     async def submit_answer(self) -> ToolOutput:
         """Submit your solution. Applies the test patch, runs the test suite, and scores."""
+        if self._submitting:
+            return ToolOutput(
+                blocks=[TextBlock(text="A submission is already being graded; it will not be re-scored.")],
+                reward=0.0,
+                finished=False,
+            )
+        self._submitting = True
+        try:
+            return await self._grade_submission()
+        except BaseException:
+            # Grading could not finish (e.g. a sandbox error), so a retry is graded.
+            self._submitting = False
+            raise
+
+    async def _grade_submission(self) -> ToolOutput:
         assert self.workdir is not None, "setup() must run before tools"
         # 1. Write test_patch to a file and apply it
         test_patch_encoded = base64.b64encode(
@@ -314,8 +348,11 @@ class SWERebenchV2(Environment):
         await self.sandbox.run(
             f"echo '{test_patch_encoded}' | base64 -d > /tmp/test_patch.diff"
         )
+        # A retry after a grading error finds the patch already applied; the
+        # reverse check skips re-applying it instead of failing.
         apply_output, apply_code = await self.sandbox.run(
-            f"cd {_shell_quote(self.workdir)} && git apply /tmp/test_patch.diff"
+            f"cd {_shell_quote(self.workdir)} && "
+            "(git apply --reverse --check /tmp/test_patch.diff 2>/dev/null || git apply /tmp/test_patch.diff)"
         )
         if apply_code != 0:
             # Try with --3way as fallback
@@ -323,19 +360,31 @@ class SWERebenchV2(Environment):
                 f"cd {_shell_quote(self.workdir)} && git apply --3way /tmp/test_patch.diff"
             )
             if apply_code != 0:
+                # git's output names the held-out test files, so it stays server-side.
+                print(f"Test patch did not apply for {self.parsed.instance_id}:\n{apply_output}")
                 return ToolOutput(
-                    blocks=[TextBlock(text=f"Failed to apply test patch:\n{apply_output}")],
+                    blocks=[TextBlock(text="Failed to apply the held-out test patch, usually because "
+                                           "test files it touches were modified or created.\nReward: 0.0")],
                     reward=0.0,
                     finished=True,
                 )
 
-        # 2. Run test command
+        # 2. Run test command. Its output goes to a file that is downloaded in
+        # full: sandbox.run() keeps only the first 50 KB, and a large suite's
+        # results would fall outside that window.
         test_cmd = self.parsed.install_config.test_cmd
         res = await self.sandbox.run(
-            f"cd {_shell_quote(self.workdir)} && {test_cmd}",
+            f"cd {_shell_quote(self.workdir)} && (\n{test_cmd}\n) > {TEST_LOG_PATH} 2>&1",
             timeout=600,
         )
-        test_output, test_code = res.output, res.return_code
+        test_code = res.return_code
+        if res.timed_out:
+            return ToolOutput(
+                blocks=[TextBlock(text="The test suite timed out after 600s.\nReward: 0.0")],
+                reward=0.0,
+                finished=True,
+            )
+        test_output = _decode_log(await self.sandbox.download(TEST_LOG_PATH))
 
         # 3. Parse test output
         parser_name = self.parsed.install_config.log_parser
@@ -343,8 +392,10 @@ class SWERebenchV2(Environment):
             parser_fn = _get_log_parser(parser_name)
             test_results = parser_fn(test_output)
         except Exception as e:
+            # The test output names the held-out tests, so it stays server-side.
+            print(f"Log parser error ({parser_name}) for {self.parsed.instance_id}: {e!r}")
             return ToolOutput(
-                blocks=[TextBlock(text=f"Log parser error ({parser_name}): {e}\n\nRaw output:\n{test_output[:4000]}")],
+                blocks=[TextBlock(text=f"Log parser error ({parser_name}).\nReward: 0.0")],
                 reward=0.0,
                 finished=True,
             )
@@ -361,11 +412,13 @@ class SWERebenchV2(Environment):
 
         reward = 1.0 if (fail_to_pass_ok and pass_to_pass_ok) else 0.0
 
-        # Build summary
-        f2p_detail = []
-        for t in self.parsed.FAIL_TO_PASS:
-            status = test_results.get(t, "NOT_FOUND")
-            f2p_detail.append(f"  {t}: {status}")
+        # Build summary. Counts only: the held-out tests' names are part of the
+        # task's reference.
+        f2p_total = len(self.parsed.FAIL_TO_PASS)
+        f2p_passed = sum(
+            1 for t in self.parsed.FAIL_TO_PASS
+            if test_results.get(t) == TestStatus.PASSED.value
+        )
         p2p_total = len(self.parsed.PASS_TO_PASS)
         p2p_passed = sum(
             1 for t in self.parsed.PASS_TO_PASS
@@ -374,8 +427,7 @@ class SWERebenchV2(Environment):
 
         summary = (
             f"Test command exit code: {test_code}\n"
-            f"FAIL_TO_PASS ({len(self.parsed.FAIL_TO_PASS)}):\n" +
-            "\n".join(f2p_detail) + "\n"
+            f"FAIL_TO_PASS: {f2p_passed}/{f2p_total} passed\n"
             f"PASS_TO_PASS: {p2p_passed}/{p2p_total} passed\n"
             f"Reward: {reward}"
         )
