@@ -1,3 +1,4 @@
-openreward>=0.1.50
+openreward>=0.1.118
 pydantic>=2.0
 pyarrow>=14.0
+pyright>=1.1.409

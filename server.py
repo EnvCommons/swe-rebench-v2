@@ -138,7 +138,7 @@ class SWERebenchV2(Environment):
         self.sandbox_settings = SandboxSettings(
             environment=ENVIRONMENT_NAME,
             image=self.parsed.image_name,
-            machine_size="1:2"
+            machine_size="2:4"
         )
         self.sandbox = self.or_client.sandbox(self.sandbox_settings)
 
@@ -182,7 +182,7 @@ class SWERebenchV2(Environment):
         # SWE-rebench V2 images use /{project_name} as WORKDIR (not /testbed).
         # Query the container's actual WORKDIR so we don't have to guess.
         res = await self.sandbox.run("pwd")
-        self.workdir = (res.output if hasattr(res, 'output') else res[0]).strip()
+        self.workdir = res.output.strip()
         # Configure git
         await self.sandbox.run(
             f"cd {_shell_quote(self.workdir)} && "
@@ -224,6 +224,7 @@ class SWERebenchV2(Environment):
     @tool
     async def bash(self, input: BashInput) -> ToolOutput:
         """Run a bash command in the container."""
+        assert self.workdir is not None, "setup() must run before tools"
         cmd = f"cd {_shell_quote(self.workdir)} && {input.command}"
         output, exit_code = await self.sandbox.run(cmd)
         s = output if output else "(no output)"
@@ -305,6 +306,7 @@ class SWERebenchV2(Environment):
     @tool
     async def submit_answer(self) -> ToolOutput:
         """Submit your solution. Applies the test patch, runs the test suite, and scores."""
+        assert self.workdir is not None, "setup() must run before tools"
         # 1. Write test_patch to a file and apply it
         test_patch_encoded = base64.b64encode(
             self.parsed.test_patch.encode('utf-8')

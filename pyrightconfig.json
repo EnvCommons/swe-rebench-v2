@@ -1,0 +1,9 @@
+{
+  "include": [
+    "**.py"
+  ],
+  "exclude": [
+    "venv",
+    ".venv"
+  ]
+}

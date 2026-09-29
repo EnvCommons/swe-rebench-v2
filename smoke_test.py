@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 
 import pyarrow.parquet as pq
+from openreward.api.environments.types import TextBlock
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument(
@@ -70,6 +71,12 @@ environment = or_client.environments.get(name="nebius/SWE-rebench-V2")
 ok = True
 
 
+def _block_text(result) -> str:
+    block = result.blocks[0]
+    assert isinstance(block, TextBlock)
+    return block.text
+
+
 def apply_patch(session, patch_bytes: str, label: str) -> bool:
     """Apply a patch via bash, with --3way fallback. Returns success."""
     encoded = base64.b64encode(patch_bytes.encode("utf-8")).decode("ascii")
@@ -77,7 +84,7 @@ def apply_patch(session, patch_bytes: str, label: str) -> bool:
         "command": f"echo '{encoded}' | base64 -d > /tmp/{label}.patch && git apply /tmp/{label}.patch",
         "description": f"Apply {label}",
     })
-    text = result.blocks[0].text
+    text = _block_text(result)
     if "Exit code: 0" in text:
         return True
     # Fallback
@@ -85,7 +92,7 @@ def apply_patch(session, patch_bytes: str, label: str) -> bool:
         "command": f"git apply --3way /tmp/{label}.patch",
         "description": f"Apply {label} with --3way",
     })
-    return "Exit code: 0" in result.blocks[0].text
+    return "Exit code: 0" in _block_text(result)
 
 
 # --- Phase 1: submit WITHOUT patch, expect reward=0 ---
@@ -95,10 +102,12 @@ print("=" * 60)
 
 with environment.session(split="train", index=args.index) as session:
     prompt = session.get_prompt()
-    print(f"Repo cloned at: {prompt[0].text.split('cloned at `')[1].split('`')[0]}")
+    first_prompt_block = prompt[0]
+    assert isinstance(first_prompt_block, TextBlock)
+    print(f"Repo cloned at: {first_prompt_block.text.split('cloned at `')[1].split('`')[0]}")
 
     result = session.call_tool("submit_answer", {})
-    print(result.blocks[0].text)
+    print(_block_text(result))
     pre_reward = result.reward
     print(f"\nReward: {pre_reward}")
 
@@ -131,7 +140,7 @@ with environment.session(split="train", index=args.index) as session:
             "command": test_cmd,
             "description": "Run tests for diagnostic",
         })
-        raw_output = result.blocks[0].text
+        raw_output = _block_text(result)
         print(raw_output[:5000])
         if len(raw_output) > 5000:
             print(f"\n... ({len(raw_output)} total chars, truncated)")
@@ -166,7 +175,7 @@ with environment.session(split="train", index=args.index) as session:
     # Submit (applies test patch internally, runs tests, scores)
     print("\n--- Submitting ---")
     result = session.call_tool("submit_answer", {})
-    print(result.blocks[0].text)
+    print(_block_text(result))
     post_reward = result.reward
     print(f"\nReward: {post_reward}")
 

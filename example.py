@@ -2,8 +2,11 @@ import dataclasses
 import os
 from pathlib import Path
 import textwrap
+from typing import Any, cast
 from openai import OpenAI
+from openai.types.shared_params.reasoning import Reasoning
 from openreward import OpenReward
+from openreward.environments.types import TextBlock
 import json
 import pyarrow.parquet as pq
 
@@ -111,6 +114,7 @@ with environment.session(split="train", index=TASK_INDEX) as session:
             print(textwrap.shorten(block.text + "\n\nMake sure to be thorough and fix all instances of the issue", width=200, placeholder="..."))
     print_separator()
 
+    assert isinstance(prompt[0], TextBlock)
     input_list = [{"role": "user", "content": prompt[0].text}]
     rollout.log_openai_response(input_list[0])
     finished = False
@@ -121,9 +125,9 @@ with environment.session(split="train", index=TASK_INDEX) as session:
         print(f"\n{BOLD}━━━ Step {step} ━━━{RESET}")
         response = oai_client.responses.create(
             model=MODEL_NAME,
-            tools=tools,
-            input=input_list,
-            reasoning={"effort": "high", "summary": "auto"}
+            tools=cast(Any, tools),
+            input=cast(Any, input_list),
+            reasoning=Reasoning(effort="high", summary="auto")
         )
         print_model_output(response)
         rollout.log_openai_response(response)
@@ -138,6 +142,7 @@ with environment.session(split="train", index=TASK_INDEX) as session:
                 reward = tool_result.reward
                 finished = tool_result.finished
 
+                assert isinstance(tool_result.blocks[0], TextBlock)
                 tool_result_item = {
                     "type": "function_call_output",
                     "call_id": item.call_id,
