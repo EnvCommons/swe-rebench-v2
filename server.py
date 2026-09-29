@@ -345,9 +345,14 @@ class SWERebenchV2(Environment):
         test_patch_encoded = base64.b64encode(
             self.parsed.test_patch.encode('utf-8')
         ).decode('ascii')
-        await self.sandbox.run(
+        _, write_code = await self.sandbox.run(
             f"echo '{test_patch_encoded}' | base64 -d > /tmp/test_patch.diff"
         )
+        # A failed write is a sandbox fault, not a patch that does not apply:
+        # raise so the submit can be retried. The command carries the test
+        # patch, so the error does not quote it.
+        if write_code != 0:
+            raise RuntimeError("Could not write the test patch into the sandbox")
         # A retry after a grading error finds the patch already applied; the
         # reverse check skips re-applying it instead of failing.
         apply_output, apply_code = await self.sandbox.run(
@@ -392,13 +397,11 @@ class SWERebenchV2(Environment):
             parser_fn = _get_log_parser(parser_name)
             test_results = parser_fn(test_output)
         except Exception as e:
-            # The test output names the held-out tests, so it stays server-side.
+            # A parser failure is a grader fault, not a verdict on the patch:
+            # raise so the submit can be retried. The test output names the
+            # held-out tests, so it stays server-side.
             print(f"Log parser error ({parser_name}) for {self.parsed.instance_id}: {e!r}")
-            return ToolOutput(
-                blocks=[TextBlock(text=f"Log parser error ({parser_name}).\nReward: 0.0")],
-                reward=0.0,
-                finished=True,
-            )
+            raise RuntimeError(f"Log parser error ({parser_name})") from None
 
         # 4. Check FAIL_TO_PASS and PASS_TO_PASS
         fail_to_pass_ok = all(
