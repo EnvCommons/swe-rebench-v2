@@ -1,7 +1,7 @@
 """Build task_index.json from the SWE-rebench-V2 parquet files.
 
-Reads only the install_config column to determine which rows have valid
-docker_specs, then writes a lightweight index file that the environment
+Reads only the install_config column to determine which rows have a valid
+test_cmd, then writes a lightweight index file that the environment
 server loads at startup — so it never needs to scan the full dataset.
 
 Usage:
