@@ -68,7 +68,7 @@ def print_tool_result(tool_name, tool_result):
             print(f"  {DIM}│ [image: {block.mimeType}]{RESET}")
     print()
 
-environment = or_client.environments.get(name="nebius/SWE-rebench-V2")
+environment = or_client.environments.get(name="GeneralReasoning/swe-rebench-v2")
 tools = environment.list_tools(format="openai")
 
 TASK_INDEX = 1
@@ -102,7 +102,7 @@ with environment.session(split="train", index=TASK_INDEX) as session:
     rollout = or_client.rollout.create(
         run_name="SWE-rebench-V2-train-quickstart",
         rollout_name="example_task",
-        environment="nebius/SWE-rebench-V2",
+        environment="GeneralReasoning/swe-rebench-v2",
         split="train",
     )
 

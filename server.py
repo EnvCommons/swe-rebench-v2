@@ -58,7 +58,7 @@ class TaskSpec(BaseModel):
 # Tool input models
 # ---------------------------------------------------------------------------
 
-ENVIRONMENT_NAME = "nebius/SWE-rebench-V2"
+ENVIRONMENT_NAME = "GeneralReasoning/swe-rebench-v2"
 
 # Where submit_answer writes the test run's combined stdout and stderr.
 TEST_LOG_PATH = "/tmp/test_output.log"

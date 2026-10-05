@@ -66,7 +66,7 @@ print(f"FAIL_TO_PASS ({len(fail_to_pass)}): {fail_to_pass[:3]}{'...' if len(fail
 print(f"PASS_TO_PASS: {len(pass_to_pass)} tests\n")
 
 or_client = OpenReward()
-environment = or_client.environments.get(name="nebius/SWE-rebench-V2")
+environment = or_client.environments.get(name="GeneralReasoning/swe-rebench-v2")
 
 ok = True
 
